@@ -20,16 +20,13 @@ conn=psycopg2.connect(f"dbname={db} user={user} password={password} port={port} 
 cur = conn.cursor()
 cur.execute("set statement_timeout=0;")
 tables = []
-fkeys = {}
-refs_db = {}
+fkeys_db = {}
 
 def get_tables():
-    print(db)
     cur.execute(f"SELECT   * FROM   pg_catalog.pg_tables WHERE  schemaname != '{db}' AND schemaname != 'information_schema' AND schemaname != 'pg_catalog' ")
     for a in cur.fetchall():
         tables.append(a)
-        #print("# TABLE --", a[1])
-    print(f"-- Found {len(tables)} tables --")
+    #print(f"-- Found {len(tables)} tables --")
 
 def describe(tablename):
     cur.execute(f"SELECT * FROM information_schema.COLUMNS WHERE TABLE_NAME = '{tablename}';")
@@ -44,9 +41,9 @@ def columns(tablename):
 
     return cols
 
-def get_fkeys(tablename=None):
-    global fkeys
-    if not fkeys:
+def get_fkeys():
+    global fkeys_db
+    if not fkeys_db:
         cur.execute("""SELECT conrelid::regclass AS "FK_Table"
       ,CASE WHEN pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY %' THEN substring(pg_get_constraintdef(c.oid), 14, position(')' in pg_get_constraintdef(c.oid))-14) END AS "FK_Column"
       ,CASE WHEN pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY %' THEN substring(pg_get_constraintdef(c.oid), position(' REFERENCES ' in pg_get_constraintdef(c.oid))+12, position('(' in substring(pg_get_constraintdef(c.oid), 14))-position(' REFERENCES ' in pg_get_constraintdef(c.oid))+1) END AS "PK_Table"
@@ -59,11 +56,12 @@ ORDER  BY pg_get_constraintdef(c.oid), conrelid::regclass::text, contype DESC;
 """)
         for kk in cur.fetchall():
             pk_table = kk[0].replace('"', "")
-            if pk_table not in fkeys:
-                fkeys[pk_table] = []
-            fkeys[pk_table].append((kk[1], (kk[2].replace('"', ""), kk[3])))
-    if tablename:
-        return fkeys.get(tablename, [])
+            if pk_table not in fkeys_db:
+                fkeys_db[pk_table] = {}
+            fieldname = kk[1]
+            to_table = kk[2].replace('"', "")
+            to_field = kk[3]
+            fkeys_db[pk_table][fieldname] = (to_table, to_field, [])
 
 def approximate(tablename):
     cur.execute(f"SELECT reltuples AS approximate_row_count FROM pg_class WHERE relname = '{tablename}'; ")
@@ -91,27 +89,18 @@ def extract(tablename, save=True):
             for single in sampleset:
                 fobj.write(json.dumps([str(col) for col in single]))
 
-    refs = [ fk[0] for fk in fkeys.get(tablename, []) ]
     cols = columns(tablename)
 
     for row in sampleset:
-        for fkey in refs:
+        for fkey in fkeys_db.get(tablename, {}):
+            print(fkey)
             col_pos = cols.get(fkey) - 1
-            refs_db[tablename][fkey].append(row[col_pos])
+            fkeys_db[tablename][fkey][2].append(row[col_pos])
 
     return sampleset 
     
-
 get_tables()
 get_fkeys()
-
-# build refs set
-for tbl in tables:
-    tablename = tbl[1]
-    refs_db[tablename] = {}
-    for key in fkeys.get(tablename, []):
-        fieldname = key[0]
-        refs_db[tablename][fieldname] = []
 
 # Begin
 print(f"Starting with {start_table}") 
@@ -120,5 +109,12 @@ for tbl in tables:
     tablename = tbl[1]
     if tablename==start_table:
         continue
+    if not tablename.startswith("autho"):
+        break
     extract(tablename)
 
+# Now Get the references and append to the files
+for tablename, table_refs in fkeys_db.items():
+    for fieldname, refinfo in table_refs.items():
+        to_table, to_field, refs = refinfo
+        refs = set(refs)
