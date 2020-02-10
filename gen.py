@@ -24,7 +24,8 @@ fkeys = {}
 refs_db = {}
 
 def get_tables():
-    cur.execute(f"SELECT   * FROM   pg_catalog.pg_tables WHERE   schemaname != '{db}' AND schemaname != 'information_schema'; ")
+    print(db)
+    cur.execute(f"SELECT   * FROM   pg_catalog.pg_tables WHERE  schemaname != '{db}' AND schemaname != 'information_schema' AND schemaname != 'pg_catalog' ")
     for a in cur.fetchall():
         tables.append(a)
         #print("# TABLE --", a[1])
@@ -35,8 +36,13 @@ def describe(tablename):
     return cur.fetchall()
 
 def columns(tablename):
-    cur.execute(f"select column_name, ordinal_position from information_schema.COLUMNS where TABLE_NAME = '{tablename}'")
-    return cur.fetchall()
+    cur.execute(f"select column_name from information_schema.COLUMNS where TABLE_NAME = '{tablename}'")
+
+    cols = {}
+    for key, val in enumerate(cur.fetchall()):
+        cols[val[0]] = key
+
+    return cols
 
 def get_fkeys(tablename=None):
     global fkeys
@@ -63,25 +69,35 @@ def approximate(tablename):
     cur.execute(f"SELECT reltuples AS approximate_row_count FROM pg_class WHERE relname = '{tablename}'; ")
     return int(cur.fetchone()[0])
 
+def column_position(cols, colname):
+    for cc in cols:
+        if cc[0] == colname:
+            return cc[1]
+
 def extract(tablename, save=True):
     approx = approximate(tablename)
     print(f"# Table {tablename} ~ apx. {approx} rows ") 
     if approx > limit:
         sample_percentage =  limit / approx * 100
-        sample_query = f"select * from {tablename} TABLESAMPLE SYSTEM({sample_percentage}) REPEATABLE (60);"
+        sample_query = f"select * from \"{tablename}\" TABLESAMPLE SYSTEM({sample_percentage}) REPEATABLE (60);"
         cur.execute(sample_query)
     else:
-        cur.execute(f"select * from {tablename} ")
+        cur.execute(f"select * from \"{tablename}\"; ")
 
     sampleset = cur.fetchall()
-
-    refs = fkeys.get(tablename)
-    cols = columns(tablename)
 
     if save is True:
         with open(f"dataset/{tablename}.json", "w+") as fobj:
             for single in sampleset:
                 fobj.write(json.dumps([str(col) for col in single]))
+
+    refs = [ fk[0] for fk in fkeys.get(tablename, []) ]
+    cols = columns(tablename)
+
+    for row in sampleset:
+        for fkey in refs:
+            col_pos = cols.get(fkey) - 1
+            refs_db[tablename][fkey].append(row[col_pos])
 
     return sampleset 
     
@@ -100,7 +116,9 @@ for tbl in tables:
 # Begin
 print(f"Starting with {start_table}") 
 extract(start_table)
-
 for tbl in tables:
-    tbl_name = tbl[1]
+    tablename = tbl[1]
+    if tablename==start_table:
+        continue
+    extract(tablename)
 
