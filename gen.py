@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from .creds import USER, PASSWORD, HOST, PORT, DB, SAMPLE_DB, START_TABLE, LIMIT
+from creds import USER, PASSWORD, HOST, PORT, DB, SAMPLE_DB, START_TABLE, LIMIT
 
 user=USER
 password=PASSWORD
@@ -13,25 +13,30 @@ limit=LIMIT
 
 # ------ code ---------
 import psycopg2
+import math
+import json
+
 conn=psycopg2.connect(f"dbname={db} user={user} password={password} port={port} host={host}")
 cur = conn.cursor()
+cur.execute("set statement_timeout=0;")
 tables = []
 fkeys = {}
+refs_db = {}
 
 def get_tables():
     cur.execute(f"SELECT   * FROM   pg_catalog.pg_tables WHERE   schemaname != '{db}' AND schemaname != 'information_schema'; ")
     for a in cur.fetchall():
         tables.append(a)
-        print("# TABLE --", a[1])
+        #print("# TABLE --", a[1])
+    print(f"-- Found {len(tables)} tables --")
 
-def describe(table):
-    cur.execute(f"SELECT * FROM information_schema.COLUMNS WHERE TABLE_NAME = '{table}';")
-    desc = cur.fetchall()
-    print("# TABLE -- ", table)
-    for d in desc:
-        print(f"# - field - {d[2]} || {d[3]} || {d[4]} || {d[7]}")
-    return desc
+def describe(tablename):
+    cur.execute(f"SELECT * FROM information_schema.COLUMNS WHERE TABLE_NAME = '{tablename}';")
+    return cur.fetchall()
 
+def columns(tablename):
+    cur.execute(f"select column_name, ordinal_position from information_schema.COLUMNS where TABLE_NAME = '{tablename}'")
+    return cur.fetchall()
 
 def get_fkeys(tablename=None):
     global fkeys
@@ -54,12 +59,47 @@ ORDER  BY pg_get_constraintdef(c.oid), conrelid::regclass::text, contype DESC;
     if tablename:
         return fkeys.get(tablename, [])
 
+def approximate(tablename):
+    cur.execute(f"SELECT reltuples AS approximate_row_count FROM pg_class WHERE relname = '{tablename}'; ")
+    return int(cur.fetchone()[0])
+
+def extract(tablename, save=True):
+    approx = approximate(tablename)
+    print(f"# Table {tablename} ~ apx. {approx} rows ") 
+    if approx > limit:
+        sample_percentage =  limit / approx * 100
+        sample_query = f"select * from {tablename} TABLESAMPLE SYSTEM({sample_percentage}) REPEATABLE (60);"
+        cur.execute(sample_query)
+    else:
+        cur.execute(f"select * from {tablename} ")
+
+    sampleset = cur.fetchall()
+
+    refs = fkeys.get(tablename)
+    cols = columns(tablename)
+
+    if save is True:
+        with open(f"dataset/{tablename}.json", "w+") as fobj:
+            for single in sampleset:
+                fobj.write(json.dumps([str(col) for col in single]))
+
+    return sampleset 
+    
 
 get_tables()
 get_fkeys()
 
-start_table_sample_rows = cur.execute(f"select * from {start_table} TABLESAMPLE SYSTEM_ROWS({limit});").fetchall()
-print(first_table_sample_rows)
+# build refs set
+for tbl in tables:
+    tablename = tbl[1]
+    refs_db[tablename] = {}
+    for key in fkeys.get(tablename, []):
+        fieldname = key[0]
+        refs_db[tablename][fieldname] = []
+
+# Begin
+print(f"Starting with {start_table}") 
+extract(start_table)
 
 for tbl in tables:
     tbl_name = tbl[1]

@@ -1,2 +1,4 @@
 creds.py
+__pycache__/
+dataset/*.json
 
