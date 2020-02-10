@@ -93,8 +93,8 @@ def extract(tablename, save=True):
 
     for row in sampleset:
         for fkey in fkeys_db.get(tablename, {}):
-            print(fkey)
-            col_pos = cols.get(fkey) - 1
+            print("fk", tablename, fkey)
+            col_pos = cols.get(fkey) 
             fkeys_db[tablename][fkey][2].append(row[col_pos])
 
     return sampleset 
@@ -109,12 +109,35 @@ for tbl in tables:
     tablename = tbl[1]
     if tablename==start_table:
         continue
-    if not tablename.startswith("autho"):
+    if tablename.startswith("c"):
         break
     extract(tablename)
 
+tables_extradata = {}
 # Now Get the references and append to the files
 for tablename, table_refs in fkeys_db.items():
     for fieldname, refinfo in table_refs.items():
         to_table, to_field, refs = refinfo
-        refs = set(refs)
+        print("--", tablename, fieldname,  to_table, to_field)
+        if not refs:
+            continue
+        #_refs = [ str(s) if s is not None else None for s in set(refs) ]
+        #_refs = #tuple([ str(s) if s is not None else None for s in set(refs)])
+        _refs = tuple(set(refs))
+        query=f"select * from {to_table} where {to_field} IN %s "
+        cur.execute(query, (_refs,) )
+
+        if to_table not in tables_extradata:
+            tables_extradata[to_table] = []
+        tables_extradata[to_table].append(cur.fetchall())
+
+# Lets finalize everything
+for tbl in tables_extradata:
+    if not tables_extradata.get(tbl):
+        continue
+    with open(f"dataset/{tbl}.json", "w+") as f:
+        sampleset = json.loads(f.read().strip() or "[]")
+        for row in tables_extradata.get(tbl):
+            print(row)
+            sampleset.append([str(col) for col in row])
+        f.write(json.dumps(sampleset))
