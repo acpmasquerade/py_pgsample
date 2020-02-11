@@ -12,6 +12,7 @@ start_table=START_TABLE
 limit=LIMIT
 
 # ------ code ---------
+import os
 import psycopg2
 import math
 import json
@@ -21,6 +22,10 @@ cur = conn.cursor()
 cur.execute("set statement_timeout=0;")
 tables = []
 fkeys_db = {}
+
+def vprint(*args, **kwargs):
+    if os.environ.get('DEBUG'):
+        print(*args, **kwargs)
 
 def get_tables():
     cur.execute(f"SELECT   * FROM   pg_catalog.pg_tables WHERE  schemaname != '{db}' AND schemaname != 'information_schema' AND schemaname != 'pg_catalog' ")
@@ -74,36 +79,41 @@ def column_position(cols, colname):
 
 def extract(tablename, save=True):
     approx = approximate(tablename)
-    print(f"# Table {tablename} ~ apx. {approx} rows ") 
+    cols = columns(tablename)
+    fkeys = fkeys_db.get(tablename, {})
+    vprint(f"# Table {tablename} ~ apx. {approx} rows ") 
     if approx > limit:
         sample_percentage =  limit / approx * 100
         sample_query = f"select * from \"{tablename}\" TABLESAMPLE SYSTEM({sample_percentage}) REPEATABLE (60);"
         cur.execute(sample_query)
+        print(sample_query)
     else:
         cur.execute(f"select * from \"{tablename}\"; ")
 
-    sampleset = cur.fetchall()
+    sampleset = []
 
-    if save is True:
-        with open(f"dataset/{tablename}.json", "w+") as fobj:
-            for single in sampleset:
-                fobj.write(json.dumps([str(col) for col in single]))
+    with open(f"dataset/{tablename}.json", "w+") as fobj:
+        for single in cur.fetchall():
+            rec = [str(col) if col is not None else None for col in single]
+            sampleset.append(rec)
+            for fkey in fkeys:
+                vprint("fk", tablename, fkey)
+                col_pos = cols.get(fkey) 
+                fkeys_db[tablename][fkey][2].append(single[col_pos])
 
-    cols = columns(tablename)
+        fobj.write(json.dumps(sampleset))
 
-    for row in sampleset:
-        for fkey in fkeys_db.get(tablename, {}):
-            print("fk", tablename, fkey)
-            col_pos = cols.get(fkey) 
-            fkeys_db[tablename][fkey][2].append(row[col_pos])
-
+    vprint(sampleset)
     return sampleset 
     
 get_tables()
 get_fkeys()
 
+if not os.path.exists("dataset/"):
+    os.makedirs("dataset/")
+
 # Begin
-print(f"Starting with {start_table}") 
+vprint(f"Starting with {start_table}") 
 extract(start_table)
 for tbl in tables:
     tablename = tbl[1]
@@ -118,18 +128,23 @@ tables_extradata = {}
 for tablename, table_refs in fkeys_db.items():
     for fieldname, refinfo in table_refs.items():
         to_table, to_field, refs = refinfo
-        print("--", tablename, fieldname,  to_table, to_field)
+        vprint("--", tablename, fieldname,  to_table, to_field)
         if not refs:
             continue
         #_refs = [ str(s) if s is not None else None for s in set(refs) ]
         #_refs = #tuple([ str(s) if s is not None else None for s in set(refs)])
         _refs = tuple(set(refs))
-        query=f"select * from {to_table} where {to_field} IN %s "
+        query=f"select * from {to_table} where {to_field} IN %s limit 10 "
         cur.execute(query, (_refs,) )
 
         if to_table not in tables_extradata:
             tables_extradata[to_table] = []
-        tables_extradata[to_table].append(cur.fetchall())
+
+        ref_set = cur.fetchall()
+        if not ref_set:
+            continue
+
+        tables_extradata[to_table].append(ref_set)
 
 # Lets finalize everything
 for tbl in tables_extradata:
@@ -137,7 +152,8 @@ for tbl in tables_extradata:
         continue
     with open(f"dataset/{tbl}.json", "w+") as f:
         sampleset = json.loads(f.read().strip() or "[]")
+        ref_set = []
         for row in tables_extradata.get(tbl):
-            print(row)
-            sampleset.append([str(col) for col in row])
-        f.write(json.dumps(sampleset))
+            ref_set.append([str(col) if col is not None else None for col in row])
+
+        f.write(json.dumps(sampleset + ref_set))
