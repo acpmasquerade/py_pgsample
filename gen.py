@@ -16,7 +16,11 @@ import os
 import psycopg2
 from psycopg2 import sql as psycosql
 import math
+import pickle
 import json
+
+if not os.path.exists("dataset/tmp"):
+    os.makedirs("dataset/tmp")
 
 conn=psycopg2.connect(f"dbname={db} user={user} password={password} port={port} host={host}")
 cur = conn.cursor()
@@ -93,58 +97,26 @@ def extract(tablename, save=True):
 
     sampleset = []
 
-    with open(f"dataset/{tablename}.json", "w+") as fobj:
+    with open(f"dataset/tmp/{tablename}.pickle", "wb") as fobj:
+        print("!! Pickling - {}".format(tablename))
         for single in cur.fetchall():
-            rec = [str(col) if col is not None else None for col in single]
-            sampleset.append(rec)
+            sampleset.append(single)
             for fkey in fkeys:
                 vprint("fk", tablename, fkey)
                 col_pos = cols.get(fkey) 
                 fkeys_db[tablename][fkey][2].append(single[col_pos])
 
-        fobj.write(json.dumps(sampleset))
+        try:
+            pickle.dump(sampleset, fobj)
+        except TypeError:
+            # @TODO : see if this breaks something
+            sampleset_2 = []
+            for row in sampleset:
+                sampleset_2.append([ rr.tobytes() if isinstance(rr, memoryview) else rr for rr in row])
+            pickle.dump(sampleset_2, fobj)
 
-    vprint(sampleset)
     return sampleset 
-    
-get_tables()
-get_fkeys()
-
-if not os.path.exists("dataset/"):
-    os.makedirs("dataset/")
-
-# Begin
-vprint(f"Starting with {start_table}") 
-extract(start_table)
-for tbl in tables:
-    tablename = tbl[1]
-    if tablename==start_table:
-        continue
-    extract(tablename)
-
-tables_extradata = {}
-# Now Get the references and append to the files
-for tablename, table_refs in fkeys_db.items():
-    for fieldname, refinfo in table_refs.items():
-        to_table, to_field, refs = refinfo
-        vprint("--", tablename, fieldname,  to_table, to_field)
-        if not refs:
-            continue
-        #_refs = [ str(s) if s is not None else None for s in set(refs) ]
-        #_refs = #tuple([ str(s) if s is not None else None for s in set(refs)])
-        _refs = tuple(set(refs))
-        query=f"select * from \"{to_table}\" where {to_field} IN %s limit 10 "
-        cur.execute(query, (_refs,) )
-
-        if to_table not in tables_extradata:
-            tables_extradata[to_table] = []
-
-        ref_set = cur.fetchall()
-        if not ref_set:
-            continue
-
-        tables_extradata[to_table] += ref_set
-
+ 
 def sql(tablename, data):
     query = psycosql.SQL("INSERT INTO {} values ({})".format(
         psycosql.Identifier(sampledb, tablename).as_string(conn),
@@ -152,23 +124,64 @@ def sql(tablename, data):
 
     return query.as_string(conn)
 
-# Lets finalize everything
-for tbl in tables_extradata:
-    if not tables_extradata.get(tbl):
-        continue
-    with open(f"dataset/{tbl}.json", "w+") as f:
-        with open(f"dataset/{tbl}.sql", "w+") as fsql:
-            sampleset = json.loads(f.read().strip() or "[]")
-            print(f"-- Rows in {tbl} !", len(sampleset))
-            ref_set = []
-            for row in tables_extradata.get(tbl):
-                _row = [str(col) if col is not None else None for col in row]
-                ref_set.append(_row)
+def generate():
+    get_tables()
+    get_fkeys()
     
-            print(f"-- -- Refs Rows in {tbl} !", len(ref_set))
+    # Begin
+    vprint(f"Starting with {start_table}") 
+    extract(start_table)
+    for tbl in tables:
+        tablename = tbl[1]
+        if tablename==start_table:
+            continue
+        extract(tablename)
     
-            fullset = sampleset + ref_set
-            for row in fullset:
-                query = sql(tbl, row)
-                fsql.write(query + ";\n")
-        #f.write(json.dumps(fullset))
+    tables_extradata = {}
+    # Now Get the references and append to the files
+    for tablename, table_refs in fkeys_db.items():
+        for fieldname, refinfo in table_refs.items():
+            to_table, to_field, refs = refinfo
+            vprint("--", tablename, fieldname,  to_table, to_field)
+            if not refs:
+                continue
+            #_refs = [ str(s) if s is not None else None for s in set(refs) ]
+            #_refs = #tuple([ str(s) if s is not None else None for s in set(refs)])
+            _refs = tuple(set(refs))
+            query=f"select * from \"{to_table}\" where {to_field} IN %s limit 10 "
+            cur.execute(query, (_refs,) )
+    
+            if to_table not in tables_extradata:
+                tables_extradata[to_table] = []
+    
+            ref_set = cur.fetchall()
+            if not ref_set:
+                continue
+    
+            tables_extradata[to_table] += ref_set
+
+    # Lets finalize everything
+    for tbl in tables_extradata:
+        if not tables_extradata.get(tbl):
+            continue
+        with open(f"dataset/tmp/{tbl}.pickle", "rb") as f:
+            print("-- {}".format(tbl))
+            with open(f"dataset/{tbl}.sql", "w+") as fsql:
+                sampleset = pickle.load(f) or []
+                print(f"-- Rows in {tbl} !", len(sampleset))
+                sampleset += tables_extradata.get(tbl) 
+                print(f"-- += Rows in {tbl} !", len(sampleset))
+                #fsql.write("BEGIN; \nSET CONSTRAINTS ALL DEFERRED; \n")
+                for row in sampleset:
+                    try:
+                        query = sql(tbl, row)
+                    except psycopg2.ProgrammingError:
+                        row_2 = [ json.dumps(rr) if isinstance(rr, dict) or isinstance(rr, list) else rr for rr in row ]
+                        query = sql(tbl, row_2)
+                    fsql.write(query + ";\n")
+                #fsql.write("COMMIT; \n")
+            #f.write(json.dumps(fullset))
+    
+
+if __name__ == "__main__":
+    generate()
