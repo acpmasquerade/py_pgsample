@@ -119,7 +119,7 @@ def extract(tablename, save=True):
  
 def sql(tablename, data):
     query = psycosql.SQL("INSERT INTO {} values ({})".format(
-        psycosql.Identifier(sampledb, tablename).as_string(conn),
+        psycosql.Identifier(tablename).as_string(conn),
         psycosql.SQL(', ').join(map(psycosql.Literal, data)).as_string(conn)))
 
     return query.as_string(conn)
