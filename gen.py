@@ -14,6 +14,7 @@ limit=LIMIT
 # ------ code ---------
 import os
 import psycopg2
+from psycopg2 import sql as psycosql
 import math
 import json
 
@@ -31,7 +32,7 @@ def get_tables():
     cur.execute(f"SELECT   * FROM   pg_catalog.pg_tables WHERE  schemaname != '{db}' AND schemaname != 'information_schema' AND schemaname != 'pg_catalog' ")
     for a in cur.fetchall():
         tables.append(a)
-    #print(f"-- Found {len(tables)} tables --")
+    vprint(f"-- Found {len(tables)} tables --")
 
 def describe(tablename):
     cur.execute(f"SELECT * FROM information_schema.COLUMNS WHERE TABLE_NAME = '{tablename}';")
@@ -86,7 +87,7 @@ def extract(tablename, save=True):
         sample_percentage =  limit / approx * 100
         sample_query = f"select * from \"{tablename}\" TABLESAMPLE SYSTEM({sample_percentage}) REPEATABLE (60);"
         cur.execute(sample_query)
-        print(sample_query)
+        vprint(sample_query)
     else:
         cur.execute(f"select * from \"{tablename}\"; ")
 
@@ -119,8 +120,6 @@ for tbl in tables:
     tablename = tbl[1]
     if tablename==start_table:
         continue
-    if tablename.startswith("c"):
-        break
     extract(tablename)
 
 tables_extradata = {}
@@ -134,7 +133,7 @@ for tablename, table_refs in fkeys_db.items():
         #_refs = [ str(s) if s is not None else None for s in set(refs) ]
         #_refs = #tuple([ str(s) if s is not None else None for s in set(refs)])
         _refs = tuple(set(refs))
-        query=f"select * from {to_table} where {to_field} IN %s limit 10 "
+        query=f"select * from \"{to_table}\" where {to_field} IN %s limit 10 "
         cur.execute(query, (_refs,) )
 
         if to_table not in tables_extradata:
@@ -144,16 +143,32 @@ for tablename, table_refs in fkeys_db.items():
         if not ref_set:
             continue
 
-        tables_extradata[to_table].append(ref_set)
+        tables_extradata[to_table] += ref_set
+
+def sql(tablename, data):
+    query = psycosql.SQL("INSERT INTO {} values ({})".format(
+        psycosql.Identifier(sampledb, tablename).as_string(conn),
+        psycosql.SQL(', ').join(map(psycosql.Literal, data)).as_string(conn)))
+
+    return query.as_string(conn)
 
 # Lets finalize everything
 for tbl in tables_extradata:
     if not tables_extradata.get(tbl):
         continue
     with open(f"dataset/{tbl}.json", "w+") as f:
-        sampleset = json.loads(f.read().strip() or "[]")
-        ref_set = []
-        for row in tables_extradata.get(tbl):
-            ref_set.append([str(col) if col is not None else None for col in row])
-
-        f.write(json.dumps(sampleset + ref_set))
+        with open(f"dataset/{tbl}.sql", "w+") as fsql:
+            sampleset = json.loads(f.read().strip() or "[]")
+            print(f"-- Rows in {tbl} !", len(sampleset))
+            ref_set = []
+            for row in tables_extradata.get(tbl):
+                _row = [str(col) if col is not None else None for col in row]
+                ref_set.append(_row)
+    
+            print(f"-- -- Refs Rows in {tbl} !", len(ref_set))
+    
+            fullset = sampleset + ref_set
+            for row in fullset:
+                query = sql(tbl, row)
+                fsql.write(query + ";\n")
+        #f.write(json.dumps(fullset))

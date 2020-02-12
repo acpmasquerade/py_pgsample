@@ -1,4 +1,5 @@
 creds.py
 __pycache__/
 dataset/*.json
-
+dataset/*.sql
+schema.sql
