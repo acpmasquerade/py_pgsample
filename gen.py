@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from creds import USER, PASSWORD, HOST, PORT, DB, SAMPLE_DB, START_TABLE, LIMIT
+from creds import USER, PASSWORD, HOST, PORT, DB, SAMPLE_DB, START_TABLE, LIMIT, EVERYTHING
 
 user=USER
 password=PASSWORD
@@ -27,6 +27,7 @@ cur = conn.cursor()
 cur.execute("set statement_timeout=0;")
 tables = []
 fkeys_db = {}
+pkeys_db = {}
 
 def vprint(*args, **kwargs):
     if os.environ.get('DEBUG'):
@@ -41,6 +42,25 @@ def get_tables():
 def describe(tablename):
     cur.execute(f"SELECT * FROM information_schema.COLUMNS WHERE TABLE_NAME = '{tablename}';")
     return cur.fetchall()
+
+def get_pkeys():
+    cur.execute(f"""select kcu.table_schema,
+       kcu.table_name,
+       tco.constraint_name,
+       kcu.column_name as key_column
+from information_schema.table_constraints tco
+join information_schema.key_column_usage kcu 
+     on kcu.constraint_name = tco.constraint_name
+     and kcu.constraint_schema = tco.constraint_schema
+     and kcu.constraint_name = tco.constraint_name
+where tco.constraint_type = 'PRIMARY KEY'
+order by kcu.table_schema,
+         kcu.table_name;
+""")
+    print(cur.fetchall())
+    for row in cur.fetchall():
+        print(row)
+        pkeys_db[row[1]] = row[3]
 
 def columns(tablename):
     cur.execute(f"select column_name from information_schema.COLUMNS where TABLE_NAME = '{tablename}'")
@@ -87,7 +107,7 @@ def extract(tablename, save=True):
     cols = columns(tablename)
     fkeys = fkeys_db.get(tablename, {})
     vprint(f"# Table {tablename} ~ apx. {approx} rows ") 
-    if approx > limit:
+    if ( tablename not in EVERYTHING ) and approx > limit:
         sample_percentage =  limit / approx * 100
         sample_query = f"select * from \"{tablename}\" TABLESAMPLE SYSTEM({sample_percentage}) REPEATABLE (60);"
         cur.execute(sample_query)
@@ -142,13 +162,14 @@ def generate():
     for tablename, table_refs in fkeys_db.items():
         for fieldname, refinfo in table_refs.items():
             to_table, to_field, refs = refinfo
-            vprint("--", tablename, fieldname,  to_table, to_field)
+            vprint("--", f"{tablename} :: {fieldname} \n --=> {to_table} :: {to_field}")
             if not refs:
                 continue
             #_refs = [ str(s) if s is not None else None for s in set(refs) ]
             #_refs = #tuple([ str(s) if s is not None else None for s in set(refs)])
             _refs = tuple(set(refs))
-            query=f"select * from \"{to_table}\" where {to_field} IN %s limit 10 "
+            query=f"select * from \"{to_table}\" where {to_field} IN %s "
+            vprint(f"-- FK Query \n\n {query}")
             cur.execute(query, (_refs,) )
     
             if to_table not in tables_extradata:
@@ -184,4 +205,7 @@ def generate():
     
 
 if __name__ == "__main__":
+    #get_pkeys()
+    #print(pkeys_db)
     generate()
+
